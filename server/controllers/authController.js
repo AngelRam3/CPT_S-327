@@ -1,141 +1,105 @@
-const User = require('../models/User');
+const User = require('../models/user');
 const { hashPassword, comparePassword } = require('../helpers/auth');
 const jwt = require('jsonwebtoken');
 const speakeasy = require('speakeasy');
 const QRCode = require('qrcode');
 
-const test = (req, res) => {
-    res.json('test is working')
-}
+const createToken = (user) => {
+    return jwt.sign(
+        { email: user.email, id: user._id, name: user.name },
+        process.env.JWT_SECRET,
+        { expiresIn: '1d' }
+    );
+};
 
-// Register User
+const test = (req, res) => res.json({ message: 'API is working!' });
+
+//Register user
 const registerUser = async (req, res) => {
     try {
         const { name, email, password } = req.body;
 
-        // Check if name is entered
-        if (!name) {
-            return res.json({
-                error: 'Please enter your name'
-            });
-        }
-
-        // Check if password is entered and meets length requirement
+        if (!name) return res.status(400).json({ error: 'Name is required' });
         if (!password || password.length < 6) {
-            return res.json({
-                error: 'Password is required and must be at least 6 characters long'
-            });
+            return res.status(400).json({ error: 'Password must be at least 6 characters' });
         }
 
-        // Check if email is already registered
-        const exist = await User.findOne({ email });
-        if (exist) {
-            return res.json({
-                error: 'Email is already in use'
-            });
+        const existingUser = await User.findOne({ email });
+        if (existingUser) {
+            return res.status(400).json({ error: 'Email is already registered' });
         }
 
-        // Hash the password
         const hashedPassword = await hashPassword(password);
-
-        // Generate 2FA secret using speakeasy
         const secret = speakeasy.generateSecret({ length: 20 });
 
-        // Create a new user and save the 2FA secret
         const user = await User.create({
             name,
             email,
             password: hashedPassword,
-            twofaSecret: secret.base32, // Save 2FA secret in the database
+            twofaSecret: secret.base32,
         });
 
-        // Generate QR code for Google Authenticator to scan
         const qrCodeUrl = await QRCode.toDataURL(secret.otpauth_url);
 
-        return res.json({
-            user,
-            message: 'Registration successful. Scan the QR code with Google Authenticator to enable 2FA.',
-            qrCodeUrl,  // Send the QR code URL to frontend for display
+        return res.status(201).json({
+            message: 'User registered successfully. Scan the QR code for 2FA setup.',
+            qrCodeUrl,
         });
     } catch (error) {
-        console.log(error);
-        res.status(500).json({ error: 'An error occurred during registration' });
+        console.error(error);
+        res.status(500).json({ error: 'Server error during registration' });
     }
 };
 
-// Login User
+// Login
 const loginUser = async (req, res) => {
     try {
-        const { email, password } = req.body;
+        const { email, password, totpCode } = req.body;
+
         const user = await User.findOne({ email });
+        if (!user) return res.status(404).json({ error: 'User not found' });
 
-        if (!user) {
-            return res.json({ error: 'No user found' });
+        const isPasswordValid = await comparePassword(password, user.password);
+        if (!isPasswordValid) return res.status(400).json({ error: 'Invalid password' });
+
+        if (!totpCode) {
+            return res.status(400).json({ error: '2FA code required' });
         }
 
-        const match = await comparePassword(password, user.password);
-        if (match) {
-            if (user.is2FAEnabled) {
-                // User has 2FA enabled
-                return res.json({
-                    userId: user._id,
-                    is2FAEnabled: true,
-                });
-            } else {
-                // No 2FA enabled, return user data for regular login
-                const token = jwt.sign({ email: user.email, id: user._id, name: user.name }, process.env.JWT_SECRET);
-                res.cookie('token', token).json(user);
-            }
-        } else {
-            return res.json({ error: 'Passwords do not match' });
-        }
-    } catch (error) {
-        console.log(error);
-    }
-};
-
-const getProfile =(req, res) => {
-    const {token} = req.cookies;
-    if (token) {
-        jwt.verify(token, process.env.JWT_SECRET, {}, (err, user) => {
-            if (err) throw err;
-            res.json(user)
-        })
-    } else {
-        res.json(null)
-    }
-}
-
-//2FA
-const verify2FA = async (req, res) => {
-    const { userId, totp } = req.body;
-    try {
-        const user = await User.findById(userId);
-        if (!user) return res.json({ error: 'User not found' });
-
-        const verified = speakeasy.totp.verify({
-            secret: user.twoFactorSecret, // Stored 2FA secret
+        const isValidTOTP = speakeasy.totp.verify({
+            secret: user.twofaSecret,
             encoding: 'base32',
-            token: totp,
+            token: totpCode,
         });
 
-        if (verified) {
-            const token = jwt.sign({ email: user.email, id: user._id, name: user.name }, process.env.JWT_SECRET);
-            res.cookie('token', token).json({ success: true });
-        } else {
-            res.json({ success: false, error: 'Invalid 2FA code' });
-        }
+        if (!isValidTOTP) return res.status(400).json({ error: 'Invalid 2FA code' });
+
+        const token = createToken(user);
+        res.cookie('token', token, { httpOnly: true }).json({ message: 'Login successful' });
+
     } catch (error) {
-        console.log(error);
-        res.json({ error: 'An error occurred' });
+        console.error(error);
+        res.status(500).json({ error: 'Server error during login' });
     }
 };
 
-const logout = (req, res) => {
-    res.clearCookie('token');
-    res.json({ message: 'Logged out successfully' });
+// Fetch user profile
+const getProfile = (req, res) => {
+    const { token } = req.cookies;
+
+    if (!token) return res.status(401).json({ error: 'Unauthorized' });
+
+    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+        if (err) return res.status(401).json({ error: 'Invalid token' });
+
+        res.json(user);
+    });
 };
 
+// Logout user
+const logout = (req, res) => {
+    res.clearCookie('token').json({ message: 'Logged out successfully' });
+};
 
 module.exports = {
     test,

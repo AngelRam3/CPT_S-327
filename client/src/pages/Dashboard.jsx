@@ -14,6 +14,7 @@ export default function Dashboard() {
     return (
         <div>
             <h1>Dashboard</h1>
+            <h2>Please Refresh the Page</h2>
             {!!user && (<h2>Welcome {user.name}!</h2>)}
             {user && <button onClick={handleLogout}>Logout</button>}
         </div>
