@@ -1,6 +1,6 @@
 # CPT_S-327
 2FA Application for 327
-#Instructions
+## Instructions
 1. Download code
 2. Open Code with two split PowerShell terminals
 3. cd into client with one terminal
